@@ -189,7 +189,7 @@ The metrics for the validation sets were used to select the best model (the vali
 
 This model, once chosen, was then applied to the df_test dataset, to give the final predictions and to assess these predictions vs the actual outcomes in the test set.
 
-## 2. Data Analysis
+## 2. Methods/Analysis
 
 The exploratory data analysis conducted is documented below. This primarily involved reviewing the distributions of the variables in the dataset and how those variables related to the target variable (Exited). 
 
@@ -662,3 +662,9 @@ With more time and resources, the following are potential avenues for further in
 Finally, the number of features on offer here was fairly limited, and in a real world scenario, you'd expect to have a lot more data to work with and other useful variables correlating with exit likelihood, relating to both the customers and their product holdings with the bank. 
 
 Overall however, I am satisfied with the performance of the model, and I believe it would provide a useful tool in a commercial context.
+
+## Appendix: References
+
+* The github repository for this project can be found at [github.com/m-d-hale/BankChurn](https://github.com/m-d-hale/BankChurn)
+
+* The data has been sourced from [kaggle.com/datasets/rangalamahesh/bank-churn/data?select=train.csv](https://www.kaggle.com/datasets/rangalamahesh/bank-churn/data?select=train.csv)
