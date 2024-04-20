@@ -1,0 +1,664 @@
+---
+title: "Bank Churn Prediction Model"
+author: "Matthew Hale"
+date: "Apr-2024"
+output:
+  pdf_document: 
+    extra_dependencies: ["float"]
+  html_document: default
+header-includes:
+- \usepackage{booktabs}
+urlcolor: blue
+always_allow_html: yes
+---
+```{r setup-options, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, comment=NA, fig.pos = "H", out.extra = "")
+```
+
+```{r load-libs, include=FALSE}
+
+options(timeout = 120)
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(httr)) install.packages("httr", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("scales", repos = "http://cran.us.r-project.org")
+if(!require(reshape2)) install.packages("reshape2", repos = "http://cran.us.r-project.org")
+if(!require(Metrics)) install.packages("Metrics", repos = "http://cran.us.r-project.org")
+if(!require(Information)) install.packages("Information", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(rpart.plot)) install.packages("rpart.plot", repos = "http://cran.us.r-project.org")
+if(!require(vip)) install.packages("vip", repos = "http://cran.us.r-project.org")
+if(!require(rattle)) install.packages("rattle", repos = "http://cran.us.r-project.org")
+if(!require(Rborist)) install.packages("Rborist", repos = "http://cran.us.r-project.org")
+if(!require(gbm)) install.packages("gbm", repos = "http://cran.us.r-project.org")
+if(!require(xgboost)) install.packages("xgboost", repos = "http://cran.us.r-project.org")
+if(!require(catboost)) install.packages("remotes", repos = "http://cran.us.r-project.org")
+if(!require(catboost)) remotes::install_url('https://github.com/catboost/catboost/releases/download/v1.2.3/catboost-R-windows-x86_64-1.2.3.tgz', INSTALL_opts = c("--no-multiarch", "--no-test-load"))
+
+library(tidyverse)
+library(httr)
+library(caret)
+library(ggthemes)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(reshape2)
+library(Metrics)
+library(Information)
+library(rpart)
+library(rpart.plot)
+library(vip)
+library(rattle)
+library(Rborist)
+library(gbm)
+library(xgboost)
+library(catboost)
+
+```
+
+```{r data-load, include=FALSE}
+
+#Load the data sourced from kaggle
+###################################
+
+#Note the link to the dataset used is here: https://www.kaggle.com/datasets/rangalamahesh/bank-churn/data
+#This was downloaded and saved alongside code/pdf/Rmd filess in the github repo here: https://github.com/m-d-hale/BankChurn
+
+#Load the data (note, using the training data only given pre-created test set has no dependent/output/label var)
+ChurnData <- read.csv('train.csv', stringsAsFactors = FALSE)
+
+#Create a training and test set.
+set.seed(123, sample.kind="Rounding")
+test_index <- createDataPartition(y = ChurnData$Exited, times = 1, p = 0.2, list = FALSE)
+df_train <- ChurnData[-test_index,]
+df_test <- ChurnData[test_index,]
+```
+
+
+## 1. Introduction
+
+In retail banking, much of the analytics, modelling and machine learning effort is focused on decision-making prior to customer on-boarding - which customers to extend credit to and at what price, how to price savings/deposits, which applications might be fraudulent etc etc.
+
+Another focus area is customer behaviour post onboarding, and a key aspect of that relates to the question of customer attrition/retention. 
+
+Banks often have a good deal of data on their customer base - both acquired at the time of onboarding and through the course of the customer relationship - and can use this data to predict which customers are likely to leave the bank and take action to retain them (if desirable for the bank to do so).
+
+This project uses kaggle data to replicate a typical process within a retail bank to predict the likelihood of any given customer exiting the bank. 
+
+This would normally be combined with profit modelling to determine the expected value if the customer was retained to support the decision-making on the action to take (if any), but this project focuses solely on modelling the likelihood of customer exit, with as much accuracy as possible.
+
+### 1b) Initial Datasets
+
+A dataset from the kaggle website has been used for this project. The link to the initial dataset (train.csv) is [here](https://www.kaggle.com/datasets/rangalamahesh/bank-churn/data?select=train.csv)
+
+This was downloaded and saved alongside code/pdf/Rmd filess in the github repo [here](https://github.com/m-d-hale/BankChurn), which can be cloned to run the code in this project.
+
+The dataset contains ~165k rows and 14 columns. The columns, with the data type and some sample entries are listed below. 'Exited' is the target variable, a binary 1-0 variable indicating if the customer exited the bank or not.
+
+```{r data-initinfo, echo=FALSE}
+
+# Get Basic Data Info for train/test initial sets
+#################################################
+
+#Table to present variables in the training/test sets, with type and sample entries
+df_train_rnd <- df_train %>% slice_sample(n=10) 
+tmp <- capture.output(str(df_train_rnd))
+tmp2 <- data.frame(tmp[2:length(tmp)])
+colnames(tmp2) <- c("AllInfo")
+tmp3 <- tmp2 %>% separate(col="AllInfo",into=c("v1","v2"),sep=":") %>% 
+  mutate(Variable = substr(v1,3,nchar(v1)),
+         Type = substr(v2,2,4),
+         Examples = substr(v2,6,100)) %>%
+  select(Variable,Type, Examples)
+tmp3 %>% knitr::kable(caption = "Variables in bank churn dataset")
+
+```
+
+### 1c) Processed/Cleansed Datasets
+
+Initial processing/cleansing was done to randomly split the dataset into a training set called **df_train** (80% of the data) and a test set called **df_test** (20% of the data). The training set was then to be used to build predictive models using a range of Machine Learning (ML) techniques, and once the best model was selected, the test set as a final set to evaluate the model's performance on previously unseen data.
+
+Please see BankChurnProject.R for the cleansing/processing code.
+
+The row counts for the two sets are below, showing the ~80/20 split.
+
+```{r rowcnts, echo=FALSE}
+cat("Number of rows in training set df_train =",format(nrow(df_train), big.mark = ",", scientific = FALSE))
+cat("Number of rows in test set df_test =",format(nrow(df_test), big.mark = ",", scientific = FALSE))
+```
+
+During the course of the exploratory data analysis further processing was done on the data to aid analysis and modelling. This included:
+
+* Banding the continuous variables: Age, Balance, Credit Score, salary
+
+* Rebanding the categorical variable NumOfProducts due to the small volume of data in some categories
+
+* Changing the variable types as required by each Machine Learning technique (e.g. some algorithms required character variables to be input as factors)
+
+### 1d) Modelling Methodology
+
+After initial exploratory data analysis on the df_train set, a number of Machine Learning algorithms were trained and tuned using that dataset to determine which would most probably give the best predictions of Exit likelihood. Primarily the training framework in the caret package was used, with the following methods tried: 
+
+* A baseline approach of using randomly generated probability, classified using using the average likelihood of exit across the training set
+
+* Simple and multivariate logistic regression models (with variable selection developed using a self written forward selection algorithm based on the BIC metric)
+
+* Decision trees
+
+* More complex tree based methods including random forest and gradient boosting (incl XGBoost and CatBoost)
+
+* Support Vector Machine (SVM)
+
+* Neural Network 
+
+These models were tuned in the main using using k-fold cross validation in the caret package to select the best hyperparameters. K-fold validation involves splitting the training set into k equal parts, training the model on k-1 of these parts and validating on the remaining part, and then repeating this process k times.
+
+The tuned models were then put through a separate k-fold function to produce a consistent set of performance metrics from multiple ML different algos averaged across the 5 validation sets. 
+
+These metrics included the following confusion matrix derived figures (therefore requiring a predicted classification for each customer - i.e. exited vs not exited  - and therefore the selection of a probability threshold for some ML techniques which outputted predicted probabilities of exit):
+
+* **Accuracy**: (True Positives + True Negatives) / All  
+[What % of all predictions, be they exited or not, were correct]
+
+* **Precision**: True Positives / (True Positives + False Positives)     
+[Out of all predicted exits, what % were actually exits]
+
+* **Recall** (aka Sensitivity): True Positives / (True Positives + False Negatives)     
+[Out of all actual exits, what % did the model predict as exits]
+
+* **F1**: 2 * (Precision * Recall) / (Precision + Recall)        
+[Balanced measure of Precision and Recall]
+
+* **Specificity**: True Negatives / (True Negatives + False Positives)       
+[Out of all actual non-exits, what % did the model predict as non-exits]
+
+* **Balanced Accuracy**: (Sensitivity + Specificity) / 2       
+[A balanced measure of Sensitivity and Specificity]
+
+Another two measures were also included, given they didn't require a probability threshold to be selected. 
+
+* **Area under the ROC curve (AUC)**; the ROC curve plots the True Positive Rate (Recall) against the False Positive Rate across all possible probability thresholds, and the area under this plotted curve provides a measure of how well the model separates exiting vs non exiting customers (better discriminating models have the ROC curve pulled up towards the top left corner, with higher True Positive Rates and lower False Positive Rates, giving a larger AUC)
+
+* **Log Loss**. This is a measure of the dissimilarity between the predicted probabilities from an ML model and the actual outcomes. In a similar fashion to RMSE, MAE etc (measures which are less appropriate for binary prediction problems) lower values suggest a closer match between the predictions and actuals and a better model. 
+
+The metrics for the validation sets were used to select the best model (the validation sets being used as a good view on expected performance of the models on previously unseen data down the line - i.e. the test data). 
+
+This model, once chosen, was then applied to the df_test dataset, to give the final predictions and to assess these predictions vs the actual outcomes in the test set.
+
+## 2. Data Analysis
+
+The exploratory data analysis conducted is documented below. This primarily involved reviewing the distributions of the variables in the dataset and how those variables related to the target variable (Exited). 
+
+### 2.1 Missing Variables
+
+The first step was a quick check  to understand if there were missing data, and if so to determine how to deal with these cases.
+
+Per below, the dataset has no missing data at all (which highlights the simulated nature of the data - this would be an extremely surprising result in a real-world dataset).
+
+```{r analysis1, echo=FALSE}
+
+#Count of missing values per variable
+tmp1 <- df_train %>% sapply(., function(x) sum(is.na(x))) %>% as.data.frame()
+colnames(tmp1) <- c("MissingCount")
+tmp1 %>% knitr::kable(caption = "Missing data count by variable")
+
+```
+
+
+### 2.2 Initial consideration of ID variables
+At this stage, before getting into the distributions, I wanted to understand whether all the variables were candidate predictors - in particular, whether the Customer ID variable in the dataset was likely to be useful in predicting the target variable.
+
+If there were multiple records for the same customer ID in the dataset, then the variable would potentially be useful (e.g. if a customer had repeatedly chosen not to exit, then you might expect that to continue in the future).
+
+Per below, however, whilst there are multiple records present for some customer IDs, it became clear that a given customer ID with multiple records didn't have consistent surnames throughout. i.e. the customer ID doesn't appear to be a unique customer identifier. As such, I took the decision to drop the ID variables as candidate predictors.
+
+Here are the top customer IDs in terms of records in the data:
+
+```{r analysis2, echo=FALSE}
+df_train %>% group_by(CustomerId) %>% 
+  summarize(n = n()) %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+  head() %>% 
+  knitr::kable(caption = "Customer IDs with most records in the data")
+```
+
+Here is an example customer ID with multiple records, and it's clear the surname, gender, age, geography etc are not consistent. i.e. the customer Id is not a unique identifier of a given customer.
+
+```{r analysis3, echo=FALSE}
+df_train %>% filter(CustomerId == 15565796) %>% 
+  select(id, CustomerId, Surname, CreditScore, Geography, Gender, Age) %>%
+  knitr::kable(caption = "Example Customer ID showing different surnames, genders, ages, geographies etc")
+```
+
+### 2.3 Distributions of Numerical Variables
+
+Now, to get on with reviewing the variables in the training set, the following table shows the minimum, mean and maximum of the numerical variables.
+
+```{r analysis4, echo=FALSE}
+
+#List of numerical variables
+numvars_all <- names(df_train)[sapply(df_train, is.numeric)]
+
+#Create summary table for numerical variables
+summary_table <- data.frame(Min = sapply(df_train[numvars_all], min, na.rm = TRUE),
+                            Mean = round(sapply(df_train[numvars_all], mean, na.rm = TRUE),2),
+                            Max = sapply(df_train[numvars_all], max, na.rm = TRUE))
+summary_table %>% knitr::kable()
+```
+
+Some of these, whilst numerical, are effectively categorical or binary (e.g. Tenure, NumOfProducts, HasCrCard, IsActiveMember), and of course Exited is the target variable.
+
+Of the remaining numerical predictor variables, the following histograms show their distributions:
+
+```{r numhists, echo=FALSE, fig.cap="Histograms of Numerical Variables", fig.show="hold", out.width="50%"}
+#Plot histograms for numerical variables
+########################################
+
+#List of numerical variables
+numvars <- c("CreditScore", "Age", "Balance", "EstimatedSalary")
+
+#empty list to store histograms
+hist_list <- list() 
+
+#loop through vars in numvars list and produce histogram for each
+for (i in 1:length(numvars)) {
+  var <- numvars[i]
+  bincalc <- (max(df_train[[var]]) - min(df_train[[var]]))/30
+  hist_list[[i]] <- ggplot(df_train, aes_string(x=var)) + 
+    geom_histogram(binwidth = bincalc, fill = "steelblue", color = "black") +
+    labs(title = var, x = var, y = "Frequency") +
+    theme_economist() +
+    theme(axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+          axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)))
+}
+
+#Print each of the histograms (NB: could do in loop of course, but this is to get each one to print in the Rmd file )
+
+par(mar=c(4,4,.1,.1))
+
+print(hist_list[[1]])
+print(hist_list[[2]])
+print(hist_list[[3]])
+print(hist_list[[4]])
+```
+
+So, a sensible looking credit score and age range, rather inflated estimated salaries (must be a US rather than UK dataset!), and a balance variable with a large number of 0s (which may be a concern - it's possible that these are missing values, or that the bank has a large number of customers with no balance).
+
+
+### 2.4 Distributions of Categorical Variables and relationship to Exit Likelihood
+
+The next step was to plot categorical variables to understand their distributions, and also overlay the average percentage of exits in each category to see if any patterns started to emerge.
+
+In this step, I also plotted banded versions of the numerical variables, again for an early view on relationships between these variables and the target variable.
+
+```{r catPlots, echo=FALSE, fig.cap="Categorical Vars vs Exit Pct", fig.show="hold", out.width="50%"}
+
+#Data Processing for Charts/Modelling
+#####################################
+
+#Band the age variable
+df_train$AgeBand <- cut(df_train$Age, breaks = c(0, 18, 30, 40, 50, 60, 70, 80, 100), 
+                        labels = c("0-18", "19-30", "31-40", "41-50", "51-60","61-70","71-80","81-100"))
+
+#Band the balance variable
+df_train$BalanceBand <- cut(df_train$Balance, breaks = c(-Inf, 0, 25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000, Inf), 
+                            labels = c("<=0", "1-25k", "25k-50k", "50k-75k", "75k-100k", "100k-125k", "125k-150k", "150k-175k", "175k-200k", "200k+"))
+
+#Band the credit score variable
+df_train$CreditScoreBand <- cut(df_train$CreditScore, breaks = c(0, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000), 
+                                labels = c("0-400", "401-450", "456-500", "501-550", "551-600", "601-650", "651-700", "701-750", "751-800", "801-850", "851-900", "901-950", "951-1000"))
+
+#Band the salary variable
+df_train$SalaryBand <- cut(df_train$EstimatedSalary, breaks = c(-Inf, 25000, 50000, 75000, 100000, 150000, 200000, Inf), 
+                           labels = c("0-25k", "25k-50k", "50k-75k", "75k-100k", "100k-150k", "150k-200k","200k+"))
+
+
+#Plot distributions and relationship to Exit Likelihood for character variables
+#############################################################################
+
+#Charting function
+chrt_func <- function(var) {
+  tmp <- df_train %>% 
+    select(var, Exited) %>% 
+    group_by_at(var) %>% 
+    summarize(Vol = n(), ExitPct = mean(Exited))
+  
+  # Calculate the scalar for percentage and add it as a new column
+  PctScalar = 1 / max(tmp$Vol)
+  
+  chrt <- tmp %>%
+    ggplot() +
+    geom_bar(aes_string(var, "Vol"), stat = "identity", fill = "steelblue") +
+    geom_line(aes_string(var, paste("ExitPct /", PctScalar), group = 1), color = "red", size = 1.5) +
+    scale_y_continuous(labels = scales::label_number_si(accuracy = 0.1), 
+                       sec.axis = sec_axis(~.* PctScalar, name = "Average Exit Pct")) +
+    ylab("Volume") +
+    xlab(var) +
+    theme_economist() +
+    theme(axis.text.y.left = element_text(color = "steelblue"),
+          axis.text.y.right = element_text(color = "red"),
+          axis.title.y.left = element_text(color = "steelblue", margin = margin(t = 0, r = 10, b = 0, l = 0)),
+          axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+          axis.title.y.right = element_text(color = "red", margin = margin(t = 0, r = 0, b = 0, l = 10)))
+  
+  return(chrt)
+}
+
+#List of character vars to plot
+charvars <- c("Geography","Gender","Tenure","NumOfProducts","HasCrCard","IsActiveMember","AgeBand","BalanceBand","CreditScoreBand","SalaryBand")
+
+#Plot each character var distribution and relationship to Exit Likelihood
+
+par(mar=c(4,4,.1,.1))
+
+chrt_func(charvars[1])
+chrt_func(charvars[2])
+chrt_func(charvars[3])
+chrt_func(charvars[4])
+chrt_func(charvars[5])
+chrt_func(charvars[6])
+```
+
+The charts show some interesting relationships between the categorical variables and the target variable. For example, the proportion of exits is higher in Germany and for female customers on average.
+
+Other variables appear to have little impact on the attrition likelihood, such as tenure and whether the customer holds a credit card with the bank.
+
+```{r catPlots2, echo=FALSE, fig.cap="Banded Numerical Vars vs Exit Pct", fig.show="hold", out.width="50%"}
+
+par(mar=c(4,4,.1,.1))
+
+
+axis.text.x = element_text(angle=90,hjust=1)
+
+chrt_func(charvars[7])
+chrt_func(charvars[8]) + theme(axis.text.x = element_text(angle=90,hjust=1))
+chrt_func(charvars[9]) + theme(axis.text.x = element_text(angle=90,hjust=1))
+chrt_func(charvars[10])
+```
+
+Here we see age looking to have a key impact, with attrition likelihood increasing with age until around retirement age, and then dropping off. The other numerical variables appear to have relatively little impact, although the large proportion of customers on zero balance does appear to have a lower attrition likelihood on average.
+
+### 2.5 Correlation Matrix
+Next, a correlation matrix between the predictors and the target variable was produced to understand the relationships between the predictor variables (to ascertain if collinearity may be an issue for some ML algos) and between each predictor variable and the target variable.
+
+```{r corrMat, echo=FALSE}
+#Correlation Matrix
+numvars_all2 <- names(df_train)[sapply(df_train, is.numeric)]
+numvars_all2 <- numvars_all2[numvars_all2 != "id"]
+numvars_all2 <- numvars_all2[numvars_all2 != "CustomerId"]
+correlation_matrix <- round(cor(df_train[,numvars_all2]),2)
+
+#Heatmap of Correlation Matrix
+
+melted_cormat <- melt(correlation_matrix)
+
+#Gen just one half of correlation matrix
+tri_fun <- function(cr_mt){
+  cr_mt[lower.tri(cr_mt)]<- NA
+  return(cr_mt)
+}
+upper_tri <- tri_fun(correlation_matrix)
+
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+
+# Heatmap
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust = 1))+
+  coord_fixed() +
+  ylab("") +
+  xlab("")
+```
+
+As the plot shows, there appear to be several correlations with the target variable Exited, with Age, Balance, NumOfProducts and IsActiveMember all showing some correlation with the target variable.
+
+Mostly the correlations between the predictor variables seem to be low, which is good news for the modelling process - it suggests that collinearity is not likely to be a significant issue. That said the correlations between Age, Balance and NumOfProducts are higher than the others, and this may be something to watch out for in the modelling process.
+
+### 2.6 Information Values
+To get a numerical representation of which of the variables may have the most impact on the target variable, Information Values were calculated for each variable. 
+
+This measures the differences in the distribution of the target variable across the different categories of each predictor variable (with numerical variables banded as part of the process), and is a good way to understand which variables may be most important in predicting the target variable.
+
+```{r InfoValues, echo=FALSE}
+#Get information values for each variable (10 buckets)
+IV <- df_train %>% mutate_if(is.character, as.factor) %>% 
+  select(c(CreditScore, Geography, Gender, Age, Tenure, Balance, NumOfProducts, HasCrCard, 
+           IsActiveMember, EstimatedSalary, Exited )) %>%
+  create_infotables(y="Exited", bins=10, parallel=TRUE)
+
+IV_df = data.frame(IV$Summary)
+IV_df %>% knitr::kable(caption = "Information Values for each variable; higher values suggest more predictive power")
+
+```
+
+So this supports the charting in suggesting age as a very key driver of exit likelihood, followed by NumOfProducts, IsActiveMember, Geography, Gender and Balance. 
+
+The other variables have very little impact on exit likelihood, which is a little surprising - features like credit score you would typically expect to be a driver of attrition, given high scoring customers are unlikely to be short of good offers to bank (and get credit products) with alternative providers, and also tend to be more price sensitive.
+
+
+## 3. Modelling Methodology and Results
+Having analysed the training dataset to improve understanding and to assess potential model drivers, the modelling process was undertaken to construct a prediction for each customer of their likelihood of leaving the bank.
+
+As previously noted, a range of Machine Learning techniques were trained and tuned using the training dataset (tuning using k-fold validation), and the results for the best models selected based on the performance in the validation sets are provided in the results below.
+
+### 3.1 Modelling Results
+
+The metrics for each model in the validation sets are shown below. These are the average metrics across the 5 validation sets produced in the k-fold process, so should be a good indicator of expected performance in unseen test data.
+
+
+```{r modelResults, echo=FALSE}
+
+#Load model results table
+load("stats_tbl_all.RData")
+
+Newnames <- c("0_Base","1_LogReg_smpl","2_LogReg_cmplx","3a_Tree_simple",
+              "3b_Tree_complex","4_RF","5_SVM","6_GBM","7_XGB","8_CatBoost","9_NNet")
+
+stats_tbl_all %>% select(-ModelName) %>% cbind(., ModelName = Newnames) %>% 
+  mutate_if(is.numeric, round, 3) %>% 
+  select(ModelName,everything()) %>% knitr::kable(caption = "Machine Learning Results Summary Table")
+
+```
+
+Some notes on these results:
+
+* The simple logistic regression referenced in the table is the best performing single variable logistic regression having experimented with all potential drivers of exit likelihood. The driver was number of products held.
+
+* The complex logistic regression was selected based on a forward variable selection algorithm, driven by BIC - which penalises for data size and number of parameters in the model, and therefore tends to deliver more parsimonious models. Confusion matrix figures reported were derived using an optimal probability threshold to max accuracy. The variables included as drivers were Number of Products, Age Band, Is Active Member, Geography, Gender and Balance Band.
+
+* The simple decision tree was produced with a fixed complexity parameter of 0.01, to keep the tree relatively small, and produced the following, again with similar variables being the key drivers here: age, number of products, is active member, geography. The information in the leaves shows the prediction of exit (1) vs not (0), the proportion of exits, and the % of cases assigned to that leaf. 
+
+```{r simpleTree, echo=FALSE}
+
+
+###Final steps to process training set for tree based methods
+df_train_fct <- df_train %>% mutate_if(is.character, as.factor)
+df_train_fct$NumOfProducts <- as.factor(df_train_fct$NumOfProducts)
+df_train_fct$HasCrCard <- as.factor(df_train_fct$HasCrCard)     
+df_train_fct$IsActiveMember <- as.factor(df_train_fct$IsActiveMember)
+df_train_fct$NumOfProducts2 <- ifelse(df_train_fct$NumOfProducts == "4" | df_train_fct$NumOfProducts == "3"  , 
+                                      "3+", df_train_fct$NumOfProducts) %>% as.factor()
+df_train_tr <- df_train_fct %>% mutate(Exited_fct = as.factor(Exited)) %>% 
+  select(-c('id','CustomerId','Surname','Exited','AgeBand','BalanceBand','CreditScoreBand','SalaryBand','NumOfProducts2'))
+
+#Train the tree
+tree_train_1 <- train(Exited_fct~., data=df_train_tr, method="rpart", trControl=trainControl(method="none"), tuneGrid = data.frame(cp = 0.01))
+
+#Plot the tree
+rpart.plot(tree_train_1$finalModel, type = 3, box.palette = "auto")
+
+```
+
+* Tuning the complexity parameter for accuracy led to the more complex tree referenced in the table
+
+* The Random Forest was produced using the Rborist package within the caret framework, and the minimum node size was tuned as well as the number of predictors to test for each split (i.e. the predictors would be sampled without replacement). The mean probability output was not aligned with the average probability of exit across the training set, and therefore an extra step was added to calibrate the probabilities - this retained the discriminatory power of the model, but brought the mean predicted probabilities in line with the actual mean probabilities of exit in the training set
+
+* The Support Vector Machine (SVM) was proving time consuming to train, and as such the training was done on a sample of 20,000 records, including the k-fold. i.e. the results in the table are not directly comparable to the other models, but are included for completeness. If increasing the sample size had been significantly improving performance, I may have invested the hours of runtime to do a full training set training, but it seemed unlikely to be able to compete with other methods giving significantly better results.
+
+* The 3 boosted trees were produced using the gbm, xgbTree and catboost and gbm packages within caret. Rather than the random forest approach, which produces a forest of decision trees each generated by sampling the training data and the parameters to use, these boosted trees are sequential models, where each tree is built to correct the errors of the previous tree. The gbm package is the original package for this type of model, and the xgboost and catboost packages are more recent, and have been developed to be faster and more accurate. 
+
+* The Neural Net is again produced via the caret package, which uses the nnet package under the hood. This produces a shallow neural network with only one hidden layer (so one layer between the input layer of feature values and the output layer of Exit predictions), and then tunes for the number of nodes in the one hidden layer (as well as the decay parameter, which is a regularisation parameter to prevent overfitting). The results are therefore for a relatively simple, not a deep, neural network. The best results were obtained when normalising the continuous variables - something that isn't typically required for classification tree methods.
+
+
+A plot of the performance on the respective measures is provided below (note 1- log loss has been used, so all metrics are "bigger = better"). The chosen XGBoost model is highlighted in the plot.
+
+
+```{r modelResultsPlot, echo=FALSE}
+
+stats_tbl_all2 <- stats_tbl_all %>% select(-ModelName) %>% cbind(., ModelName = Newnames) %>%
+  mutate(LogLoss_inv = 1- LogLoss) %>% select(-LogLoss) %>% filter(ModelName != "0_Base")
+
+stats_tbl_all_t <- stats_tbl_all2 %>% gather("Metric","Value",-ModelName)
+
+# Create line chart
+Metrics_order <- colnames(stats_tbl_all2)
+stats_tbl_all_t$Metric <- factor(stats_tbl_all_t$Metric, levels = Metrics_order)
+selected_ModelName <- "7_XGB"
+
+# Create chart
+stats_tbl_all_t %>% ggplot(aes(x = Metric, y = Value, color = ModelName, group = ModelName)) +
+  geom_line() +
+  geom_line(data = subset(stats_tbl_all_t, ModelName == selected_ModelName), size = 1.5) +
+  geom_point() +
+  labs(x = "Metric", y = "Value") +
+  theme_minimal() +
+  theme(legend.text = element_text(size = 10),
+        axis.title.x = element_text(margin = margin(t = 10)),
+        axis.text.x = element_text(angle=90,hjust=1),
+        axis.title.y = element_text(margin = margin(r = 10)))
+
+```
+
+
+### 3.2 Application of the final chosen model to the test set
+
+I decided to select the XGBoost model as the 'winner'. Even though it was very slightly outperformed by catboost on the validation sets, the difference was negligible and the training time for XGBoost was significantly quicker than catboost.
+
+The 'more complex' single decision tree, did do very well on the discriminatory side, but performed less well on AUC and log loss, which is why I decided not to go with this approach. 
+
+I felt in a real world scenario, the predicted probability of exit was likely to be key, as this probability would be combined with calculations of predicted returns if the customer was retained to give an overall expected returns metric, and it would be this metric that would likely drive the decision making.
+
+```{r finalModel, echo=FALSE}
+
+###Do all same processing on test set as training set (banding and factorising etc)
+
+#Banding
+df_test$AgeBand <- cut(df_test$Age, breaks = c(0, 18, 30, 40, 50, 60, 70, 80, 100), 
+                        labels = c("0-18", "19-30", "31-40", "41-50", "51-60","61-70","71-80","81-100"))
+
+df_test$BalanceBand <- cut(df_test$Balance, breaks = c(-Inf, 0, 25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000, Inf), labels = c("<=0", "1-25k", "25k-50k", "50k-75k", "75k-100k", "100k-125k", "125k-150k", "150k-175k", "175k-200k", "200k+"))
+
+df_test$CreditScoreBand <- cut(df_test$CreditScore, breaks = c(0, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000), labels = c("0-400", "401-450", "456-500", "501-550", "551-600", "601-650", "651-700", "701-750", "751-800", "801-850", "851-900", "901-950", "951-1000"))
+
+df_test$SalaryBand <- cut(df_test$EstimatedSalary, breaks = c(-Inf, 25000, 50000, 75000, 100000, 150000, 200000, Inf), labels = c("0-25k", "25k-50k", "50k-75k", "75k-100k", "100k-150k", "150k-200k","200k+"))
+
+#Processing
+df_test_fct <- df_test %>% mutate_if(is.character, as.factor)
+df_test_fct$NumOfProducts <- as.factor(df_test_fct$NumOfProducts)
+df_test_fct$HasCrCard <- as.factor(df_test_fct$HasCrCard)     
+df_test_fct$IsActiveMember <- as.factor(df_test_fct$IsActiveMember)
+df_test_fct$NumOfProducts2 <- ifelse(df_test_fct$NumOfProducts == "4" | df_test_fct$NumOfProducts == "3"  , 
+                                      "3+", df_test_fct$NumOfProducts) %>% as.factor()
+df_test_tr <- df_test_fct %>% mutate(Exited_fct = as.factor(Exited)) %>% 
+  select(-c('id','CustomerId','Surname','Exited','AgeBand','BalanceBand','CreditScoreBand','SalaryBand','NumOfProducts2'))
+
+#Function to get fit statistics
+#Get a suite of measures to use to evaluate models
+FitStats_func <- function(model_nm, prob,pred,act, act_num){
+  
+  #create confusion matrix
+  confusion <- confusionMatrix(data=pred, reference=act, positive = "1")
+  
+  #confusion matrix driven stats
+  accuracy <- confusion$overall['Accuracy']
+  precision <- confusion$byClass['Precision']
+  recall <- confusion$byClass['Recall']
+  F1 <- confusion$byClass['F1']
+  specificity <- confusion$byClass['Specificity']
+  balancedAccuracy <- confusion$byClass['Balanced Accuracy']
+  
+  #Use predicted probabilities to get AUC (under different cut-offs) and log loss
+  auc <- auc(act, prob)
+  
+  #Cap probabilities at marginally above 0 and marginally less than 1 to avoid log loss infinity calc issues
+  epsilon <- 1e-15
+  prob_capped <- pmin(pmax(prob, epsilon), 1 - epsilon)
+  logloss <- logLoss(act_num, prob_capped)
+  
+  # Create a data frame with the statistics
+  stats <- data.frame(ModelName = model_nm, Accuracy = accuracy, Precision = precision, Recall = recall, F1 = F1, 
+                      Specificity = specificity, BalancedAccuracy = balancedAccuracy, AUC = auc, LogLoss = logloss)
+  
+  rownames(stats) <- NULL    #remove rownames
+  
+  return(stats)
+}
+
+
+#Train the final model on the full training set
+#Train the final model on the full training set
+params <- expand.grid(nrounds = 50,
+                      max_depth = 3,
+                      eta = 0.4,
+                      gamma = 0,
+                      colsample_bytree = 0.6,
+                      min_child_weight = 1,
+                      subsample = 1)
+  
+#train the xgb
+finmod <- train(Exited_fct ~ ., 
+                data = df_train_tr, 
+                method = "xgbTree",
+                trControl=trainControl(method="none"),
+                tuneGrid = params)
+
+#Score the validation set using the model
+finprob <- predict(finmod, newdata = df_test_tr, type = "prob")[,2]
+finpred <- predict(finmod, newdata = df_test_tr, type = "raw") 
+    
+#Get actuals as factor for validation set
+Exit_fct_tmp <- as.factor(df_test_fct$Exited)
+    
+#Get the fit statistics
+stats_tbl_tst <- FitStats_func("Final Model: XGB", finprob, finpred, Exit_fct_tmp, df_test_fct$Exited)
+stats_tbl_tst %>% mutate_if(is.numeric, round, 3) %>% knitr::kable(caption = "Final Model: XGB - Test Set Results")
+
+#So similar performance on the test set vs the k-fold validation sets; slight drop in accuracy, but not much.
+
+```
+
+The variable/feature importance plot for the final XGB model is shown below. This shows the top 10 most important features in the model, with the Age and number of products held being the most important features in predicting exit likelihood, which aligns with the Information Values plots in the initial analysis and findings throughout the modelling process.
+
+```{r varimp, echo=FALSE}
+#Get variable importance plot
+var_importance <- vip::vip(finmod, num_features = 10)
+print(var_importance)
+```
+
+
+## 4. Conclusion
+The final XGBoost model gives a good prediction of the likelihood of a customer exiting the bank, and performs well across a range of performance metrics. The AUC being high suggests that the model is good at separating exiting vs non-exiting customers across a range of cut-offs, and the log loss being low suggests that the predicted probabilities are close to the actual probabilities of exit in the test set.
+
+With more time and resources, the following are potential avenues for further investigation:
+
+1. Digging deeper into the customer IDs to see if any value could be added there (even if, per the logic previously mentioned, it looked to be unlikely to be a unique identifier of a given customer). Given the high dimensionality of the ID variable though, some form of dimensionality reduction would likely be required on this route.
+
+2. The addition of other features to the model - for example seeing whether adding 1-0 binary for balance vs no balance might have helped. 
+
+3. Trying some of the models outside of the caret package - caret, whilst convenient in offering standard coding for training and prediction, does limit the parameters that can be tuned vs the underlying packages, and so it's possible that a more tuned model could have been produced using the underlying packages directly.
+
+4. Deeper neural networks may be an interesting avenue to explore, given the simple 1 hidden layer network produced in this analysis.
+
+Finally, the number of features on offer here was fairly limited, and in a real world scenario, you'd expect to have a lot more data to work with and other useful variables correlating with exit likelihood, relating to both the customers and their product holdings with the bank. 
+
+Overall however, I am satisfied with the performance of the model, and I believe it would provide a useful tool in a commercial context.
